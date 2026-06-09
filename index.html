@@ -1,0 +1,766 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>복불복 경마게임(ver.괴도jw)</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #222;
+            color: white;
+            text-align: center;
+            margin: 0;
+            padding: 20px;
+        }
+        .panel {
+            background-color: #333;
+            padding: 15px;
+            border-radius: 10px;
+            display: inline-block;
+            margin-bottom: 20px;
+        }
+        .inputs {
+            margin: 10px 0;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            justify-content: center;
+            max-width: 1000px;
+        }
+        .input-box {
+            background: #444;
+            padding: 5px 10px;
+            border-radius: 5px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        input[type="text"] {
+            width: 70px;
+            padding: 3px;
+            text-align: center;
+        }
+        .btn-del {
+            background-color: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 3px;
+            padding: 2px 6px;
+            cursor: pointer;
+            font-weight: bold;
+            font-size: 11px;
+        }
+        .btn-del:hover { background-color: #c0392b; }
+        
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            margin: 5px;
+            border: none;
+            border-radius: 5px;
+        }
+        .btn-add { background-color: #3498db; color: white; }
+        .btn-start { background-color: #f1c40f; color: black; }
+        
+        .btn-record { background-color: #555; color: #aaa; cursor: not-allowed; }
+        .btn-record.active { background-color: #e67e22; color: white; cursor: pointer; animation: pulse 1.5s infinite; }
+        
+        @keyframes pulse {
+            50% { transform: scale(1.03); background-color: #d35400; }
+        }
+        
+        .main-container {
+            display: flex;
+            justify-content: center;
+            margin-top: 10px;
+        }
+        canvas {
+            background-color: #1a1a1a; /* 경기장 밖 빈 공간은 어두운 베이스 처리 */
+            border: 4px solid #111;
+            border-radius: 10px;
+        }
+        #cameraStatus {
+            font-size: 14px;
+            color: #f1c40f;
+            font-weight: bold;
+            margin-top: 5px;
+        }
+    </style>
+</head>
+<body>
+
+    <div class="panel">
+        <h2 style="margin:0 0 5px 0;">🏇 복불복 경마게임(ver.괴도jw)</h2>
+        <div id="cameraStatus">카메라 모드: 대기 중</div>
+        <div class="inputs" id="boxContainer">
+            <div class="input-box"><span>1번 </span><input type="text" value="번개" class="horse-name"><button class="btn-del" onclick="deleteHorse(this)">X</button></div>
+            <div class="input-box"><span>2번 </span><input type="text" value="적토마" class="horse-name"><button class="btn-del" onclick="deleteHorse(this)">X</button></div>
+        </div>
+        <button class="btn-add" id="addBtn" onclick="addHorse()">+ 말 추가</button>
+        <button class="btn-start" id="startBtn" onclick="startRace()">레이스 시작!</button>
+        <button class="btn-record" id="recordBtn" onclick="downloadVideo()" disabled>💾 녹화 영상 저장하기</button>
+    </div>
+
+    <div class="main-container">
+        <canvas id="track" width="1480" height="400"></canvas>
+    </div>
+
+    <script>
+        var cvs = document.getElementById('track');
+        var ctx = cvs.getContext('2d');
+        var cameraStatusText = document.getElementById('cameraStatus');
+        
+        var horseList = [];
+        var racing = false;
+        var rankCounter = 0;
+        
+        var totalMapLength = 4800; 
+        var startLineOffset = 100; 
+        var finishLineOffset = 4600; 
+        
+        var obstaclePositions = [];
+        var trackRange = finishLineOffset - startLineOffset;
+
+        obstaclePositions.push(startLineOffset + trackRange * (1 / 8));
+        obstaclePositions.push(startLineOffset + trackRange * (2 / 8));
+        obstaclePositions.push(startLineOffset + trackRange * (3 / 8));
+        obstaclePositions.push(startLineOffset + trackRange * (4 / 8));
+        obstaclePositions.push(startLineOffset + trackRange * (5 / 8));
+        obstaclePositions.push(finishLineOffset - 100);
+
+        var gameViewWidth = 1200;
+
+        var leaderProgress = startLineOffset; 
+        var zoomScale = 1;
+
+        var cameraMode = 1;      
+        var cameraTimer = 0;     
+        var currentFocusX = startLineOffset; 
+
+        var countdownActive = false;
+        var countdownTime = 3; 
+        var countdownTimerCounter = 0;
+
+        var mediaRecorder;
+        var recordedChunks = [];
+        var hasVideoData = false;
+
+        var liveRankedHorses = [];
+
+        function Horse(id, name, laneY, color) {
+            this.id = id;
+            this.name = name;
+            this.y = laneY;
+            this.color = color;
+            this.progress = startLineOffset; 
+            this.speed = 0;
+            this.finished = false;
+            this.finalRank = 0; 
+            this.timer = 0;
+            
+            this.backTimer = 0;   
+            this.stunTimer = 0;   
+            this.frontTimer = 0;  
+            this.abilityText = ""; 
+            this.textVisibleTimer = 0;
+            this.textModel = "";
+            
+            this.hitObstacles = new Array(obstaclePositions.length).fill(false);
+
+            this.changeSpeed();
+        }
+
+        Horse.prototype.changeSpeed = function() {
+            if (this.backTimer > 0 || this.stunTimer > 0 || this.frontTimer > 0) return; 
+            this.speed = Math.random() * 1.5 + 2.5; 
+        };
+
+        Horse.prototype.draw = function(currentCameraX) {
+            var renderX = this.progress - currentCameraX + (gameViewWidth / 2) / zoomScale;
+
+            ctx.save();
+            ctx.fillStyle = this.color;
+            ctx.fillRect(renderX - 15, this.y - 8, 25, 14); 
+            
+            ctx.beginPath();
+            ctx.arc(renderX + 10, this.y - 5, 6, 0, Math.PI * 2); 
+            ctx.fill();
+
+            ctx.fillStyle = "#ffffff";
+            ctx.fillRect(renderX - 4, this.y - 16, 8, 8);
+            ctx.fillStyle = "#111111";
+            ctx.beginPath();
+            ctx.arc(renderX, this.y - 18, 3, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+
+            ctx.fillStyle = "#ffffff";
+            ctx.font = "bold 11px sans-serif";
+            ctx.textAlign = "center";
+            ctx.fillText(this.id + "." + this.name, renderX, this.y - 24);
+
+            if (this.textVisibleTimer > 0) {
+                this.textVisibleTimer--;
+                ctx.fillStyle = "#f1c40f";
+                ctx.font = "bold 12px sans-serif";
+                ctx.textAlign = "center";
+                ctx.fillText(this.abilityText, renderX, this.y - 38);
+            }
+        };
+
+        Horse.prototype.update = function() {
+            if (this.finished) return;
+
+            if (countdownActive) return;
+
+            if (this.backTimer > 0) {
+                this.backTimer--;
+                this.speed = (this.textModel === "LAST_BOOM") ? -25 : -8; 
+                if (this.backTimer === 0) this.changeSpeed();
+            } else if (this.stunTimer > 0) {
+                this.stunTimer--;
+                this.speed = 0;
+                if (this.stunTimer === 0) this.changeSpeed();
+            } else if (this.frontTimer > 0) {
+                this.frontTimer--;
+                this.speed = 8;
+                if (this.frontTimer === 0) this.changeSpeed();
+            } else {
+                this.timer++;
+                if (this.timer > 20) {
+                    this.changeSpeed();
+                    this.timer = 0;
+                }
+            }
+
+            this.progress += this.speed;
+            if (this.progress < 0) this.progress = 0;
+
+            for (var idx = 0; idx < obstaclePositions.length; idx++) {
+                var obsX = obstaclePositions[idx];
+                
+                if (!this.hitObstacles[idx] && this.progress >= obsX) {
+                    this.hitObstacles[idx] = true; 
+                    
+                    this.backTimer = 0;
+                    this.stunTimer = 0;
+                    this.frontTimer = 0;
+                    this.textVisibleTimer = 90; 
+                    this.textModel = ""; 
+
+                    if (idx === obstaclePositions.length - 1) {
+                        var finalChoice = Math.floor(Math.random() * 3) + 1;
+                        if (finalChoice === 1) {
+                            this.abilityText = "😱 대참사!! 후방 300px 튕김!!";
+                            this.textModel = "LAST_BOOM"; 
+                            this.backTimer = 18; 
+                        } else if (finalChoice === 2) {
+                            this.abilityText = "🛑 막판 얼음! (1.5초 정지)";
+                            this.stunTimer = 90; 
+                            this.speed = 0;
+                        } else if (finalChoice === 3) {
+                            this.abilityText = "😇 무사 통과!! 대박!!";
+                            this.changeSpeed(); 
+                        }
+                    } else {
+                        var choice = Math.floor(Math.random() * 3) + 1;
+                        if (choice === 1) {
+                            this.abilityText = "💥 후퇴 (-100px)";
+                            this.backTimer = 18; 
+                        } else if (choice === 2) {
+                            this.abilityText = "🛑 정지 (0.5초)";
+                            this.stunTimer = 30; 
+                            this.speed = 0;
+                        } else if (choice === 3) {
+                            this.abilityText = "⚡ 전진 (+100px)";
+                            this.frontTimer = 18; 
+                        }
+                    }
+                    break; 
+                }
+            }
+
+            if (this.progress >= finishLineOffset) {
+                this.progress = finishLineOffset;
+                this.finished = true;
+                rankCounter++;
+                this.finalRank = rankCounter; 
+            }
+        };
+
+        // [구조 수정] 이제 초록색 판때기도 카메라 스케일에 대응할 수 있도록 함수 체질 개선
+        function drawScrollingTrack(currentCameraX) {
+            var inputs = document.getElementsByClassName('horse-name');
+            var lanesCount = inputs.length;
+            var currentLanesHeight = lanesCount * 60 + 60;
+
+            // ★ [수정] 고정 위치로 그리던 초록색 경기장을 카메라 줌인/줌아웃에 맞춰 함께 연동되도록 보정
+            // 줌아웃 시 바깥 빈 공간이 보이지 않도록 좌우로 넓게(-2000 ~ 4000) 초록 바닥을 깔아줍니다.
+            ctx.fillStyle = '#2ecc71';
+            ctx.fillRect(-2000, 0, 6000, currentLanesHeight);
+
+            // 흰색 트랙 레일선들
+            ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+            ctx.lineWidth = 2;
+            for (var i = 0; i <= lanesCount; i++) {
+                var lineY = 40 + (i * 60);
+                ctx.beginPath();
+                ctx.moveTo(-2000, lineY);
+                ctx.lineTo(4000, lineY);
+                ctx.stroke();
+            }
+
+            var renderStartLineX = startLineOffset - currentCameraX + (gameViewWidth / 2) / zoomScale;
+            ctx.strokeStyle = '#3498db';
+            ctx.lineWidth = 5;
+            ctx.beginPath();
+            ctx.moveTo(renderStartLineX, 40);
+            ctx.lineTo(renderStartLineX, 40 + (lanesCount * 60));
+            ctx.stroke();
+
+            var renderFinishLineX = finishLineOffset - currentCameraX + (gameViewWidth / 2) / zoomScale;
+            ctx.strokeStyle = '#e67e22';
+            ctx.lineWidth = 5;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(renderFinishLineX, 40);
+            ctx.lineTo(renderFinishLineX, 40 + (lanesCount * 60));
+            ctx.stroke();
+            ctx.setLineDash([]);
+
+            for (var o = 0; o < obstaclePositions.length; o++) {
+                var renderObsX = obstaclePositions[o] - currentCameraX + (gameViewWidth / 2) / zoomScale;
+                var boxBorderColor = (o === obstaclePositions.length - 1) ? '#e74c3c' : '#d35400';
+                
+                for (var j = 0; j < lanesCount; j++) {
+                    var boxY = 70 + (j * 60);
+                    
+                    ctx.fillStyle = '#f1c40f';
+                    ctx.fillRect(renderObsX - 10, boxY - 10, 20, 20);
+                    ctx.strokeStyle = boxBorderColor;
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(renderObsX - 10, boxY - 10, 20, 20);
+                    
+                    ctx.fillStyle = '#333333';
+                    ctx.font = 'bold 14px sans-serif';
+                    ctx.textBaseline = 'middle';
+                    ctx.textAlign = 'center';
+                    ctx.fillText('?', renderObsX, boxY);
+                }
+            }
+        }
+
+        function drawCanvasSidebarRanking() {
+            var sidebarX = 1205; 
+            var sidebarY = 5;
+            var sidebarW = 270;
+            var sidebarH = cvs.height - 10;
+
+            ctx.save();
+            ctx.fillStyle = "#333333";
+            ctx.fillRect(sidebarX, sidebarY, sidebarW, sidebarH);
+
+            ctx.strokeStyle = "#f1c40f";
+            ctx.lineWidth = 2;
+            ctx.strokeRect(sidebarX, sidebarY, sidebarW, sidebarH);
+
+            ctx.fillStyle = "#f1c40f";
+            ctx.font = "bold 18px Arial, sans-serif";
+            ctx.textAlign = "center";
+            var titleText = "🏆 실시간 순위";
+            if (!racing && rankCounter === 0) titleText = "🏆 도착 순위";
+            ctx.fillText(titleText, sidebarX + sidebarW / 2, sidebarY + 40);
+
+            ctx.strokeStyle = "rgba(241, 196, 15, 0.6)";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(sidebarX + 15, sidebarY + 56);
+            ctx.lineTo(sidebarX + sidebarW - 15, sidebarY + 56);
+            ctx.stroke();
+
+            if (liveRankedHorses.length === 0) {
+                ctx.fillStyle = "white";
+                ctx.globalAlpha = 0.5;
+                ctx.font = "15px sans-serif";
+                ctx.fillText("경기를 시작해주세요", sidebarX + sidebarW / 2, sidebarY + 120);
+            } else {
+                ctx.textAlign = "left";
+                for (var i = 0; i < liveRankedHorses.length; i++) {
+                    var h = liveRankedHorses[i];
+                    var itemY = sidebarY + 95 + (i * 32);
+
+                    var rankNumColor = "#ffffff";
+                    if (i === 0) rankNumColor = "#f1c40f";
+                    else if (i === 1) rankNumColor = "#cccccc";
+
+                    ctx.fillStyle = rankNumColor;
+                    ctx.font = "bold 15px sans-serif";
+                    ctx.fillText((i + 1) + "위", sidebarX + 20, itemY);
+
+                    ctx.fillStyle = h.color;
+                    ctx.font = "bold 15px sans-serif";
+                    var truncatedName = h.name.length > 6 ? h.name.substring(0, 6) + ".." : h.name;
+                    ctx.fillText("[" + h.id + "번] " + truncatedName, sidebarX + 65, itemY);
+
+                    ctx.fillStyle = "white";
+                    ctx.font = "12px sans-serif";
+                    ctx.textAlign = "right";
+                    var statusText = h.finished ? "골인!🏁" : Math.floor(h.progress) + "m";
+                    ctx.fillText(statusText, sidebarX + sidebarW - 20, itemY - 1);
+                    ctx.textAlign = "left";
+                }
+            }
+            ctx.restore();
+        }
+
+        function addHorse() {
+            var container = document.getElementById('boxContainer');
+            var currentLen = container.getElementsByClassName('horse-name').length;
+            if (currentLen >= 10) {
+                alert("말은 최대 10마리까지만 가능합니다.");
+                return;
+            }
+            var num = currentLen + 1;
+            var div = document.createElement('div');
+            div.className = 'input-box';
+            div.innerHTML = '<span>' + num + '번 </span><input type="text" value="말' + num + '" class="horse-name"><button class="btn-del" onclick="deleteHorse(this)">X</button>';
+            container.appendChild(div);
+            
+            reindexHorses(); 
+            drawTrackStatic();
+        }
+
+        function deleteHorse(btn) {
+            if (racing) return; 
+            var container = document.getElementById('boxContainer');
+            var currentLen = container.getElementsByClassName('horse-name').length;
+            
+            if (currentLen <= 2) {
+                alert("경기를 위해 최소 2마리의 말은 유지되어야 합니다.");
+                return;
+            }
+            
+            var targetBox = btn.parentElement;
+            container.removeChild(targetBox);
+            
+            reindexHorses(); 
+            drawTrackStatic();
+        }
+
+        function reindexHorses() {
+            var container = document.getElementById('boxContainer');
+            var boxes = container.getElementsByClassName('input-box');
+            for (var i = 0; i < boxes.length; i++) {
+                boxes[i].getElementsByTagName('span')[0].innerText = (i + 1) + "번 ";
+            }
+        }
+
+        function drawTrackStatic() {
+            var inputs = document.getElementsByClassName('horse-name');
+            cvs.height = Math.max(400, inputs.length * 60 + 60);
+            
+            var tempCamX = startLineOffset + 400; 
+            ctx.clearRect(0, 0, cvs.width, cvs.height);
+            
+            // 대기화면 트랙 그리기
+            drawScrollingTrack(tempCamX);
+
+            var colorPalette = ['#e74c3c', '#f1c40f', '#3498db', '#9b59b6', '#e67e22', '#1abc9c', '#fd79a8', '#00b894', '#ffeaa7', '#a29bfe'];
+            for (var k = 0; k < inputs.length; k++) {
+                var nameText = inputs[k].value.trim() || ("말" + (k + 1));
+                var laneY = 70 + (k * 60);
+                var selectColor = colorPalette[k % colorPalette.length];
+                
+                var renderX = startLineOffset - tempCamX + (gameViewWidth / 2);
+                
+                ctx.fillStyle = selectColor;
+                ctx.fillRect(renderX - 15, laneY - 8, 25, 14);
+                ctx.beginPath();
+                ctx.arc(renderX + 10, laneY - 5, 6, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = "#ffffff";
+                ctx.fillRect(renderX - 4, k * 60 + 54, 8, 8);
+                ctx.fillStyle = "#111111";
+                ctx.beginPath();
+                ctx.arc(renderX, k * 60 + 52, 3, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.fillStyle = "#ffffff";
+                ctx.font = "bold 11px sans-serif";
+                ctx.textAlign = "center";
+                ctx.fillText((k + 1) + "." + nameText, renderX, laneY - 20);
+            }
+
+            drawCanvasSidebarRanking();
+        }
+
+        function startRace() {
+            if (racing) return;
+
+            var inputs = document.getElementsByClassName('horse-name');
+            horseList = [];
+            rankCounter = 0;
+            leaderProgress = startLineOffset;
+            
+            cameraMode = 1; 
+            cameraTimer = 0;
+            zoomScale = 1;
+            currentFocusX = startLineOffset;
+
+            countdownActive = true;
+            countdownTime = 3;
+            countdownTimerCounter = 0;
+
+            var recBtn = document.getElementById('recordBtn');
+            recBtn.disabled = true;
+            recBtn.classList.remove('active');
+            recBtn.innerText = "⏳ 레이싱 중 자동 녹화 중...";
+            recordedChunks = [];
+            hasVideoData = false;
+            
+            var colorPalette = ['#e74c3c', '#f1c40f', '#3498db', '#9b59b6', '#e67e22', '#1abc9c', '#fd79a8', '#00b894', '#ffeaa7', '#a29bfe'];
+
+            for (var i = 0; i < inputs.length; i++) {
+                var nameText = inputs[i].value.trim() || ("말" + (i + 1));
+                var laneY = 70 + (i * 60);
+                var selectColor = colorPalette[i % colorPalette.length];
+                
+                var h = new Horse(i + 1, nameText, laneY, selectColor);
+                h.progress = startLineOffset; 
+                horseList.push(h);
+            }
+
+            calculateLiveRankingData();
+
+            racing = true;
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('addBtn').disabled = true;
+            
+            var delBtns = document.getElementsByClassName('btn-del');
+            for(var b=0; b<delBtns.length; b++) delBtns[b].disabled = true;
+            
+            startLiveRecording();
+            runLoop();
+        }
+
+        function calculateLiveRankingData() {
+            liveRankedHorses = [].concat(horseList);
+            liveRankedHorses.sort(function(a, b) {
+                if (a.finished && b.finished) return a.finalRank - b.finalRank;
+                if (a.finished) return -1;
+                if (b.finished) return 1;
+                return b.progress - a.progress;
+            });
+        }
+
+        function updateCameraSystem() {
+            var activeHorses = [];
+            for (var i = 0; i < horseList.length; i++) {
+                if (!horseList[i].finished) {
+                    activeHorses.push(horseList[i]);
+                }
+            }
+
+            if (activeHorses.length === 0) {
+                currentFocusX += (finishLineOffset - currentFocusX) * 0.03;
+                zoomScale += (1 - zoomScale) * 0.02;
+                cameraStatusText.innerText = "카메라 모드: 경기 종료";
+                cameraStatusText.style.color = "#2ecc71";
+                return;
+            }
+
+            activeHorses.sort(function(a, b) { return b.progress - a.progress; });
+
+            if (countdownActive) {
+                currentFocusX = startLineOffset;
+                zoomScale = 1;
+                return;
+            }
+
+            cameraTimer++;
+
+            var targetFocusX = startLineOffset;
+            var targetScale = 1;
+
+            if (cameraMode === 1) { 
+                var leader = activeHorses[0];
+                targetFocusX = leader.progress;
+                targetScale = 1.2; 
+                cameraStatusText.innerText = "카메라 모드: [CH 1] 1등마 락온 캠 🎥 (" + leader.name + ")";
+                cameraStatusText.style.color = "#f1c40f";
+
+                if (cameraTimer >= 120) { 
+                    cameraMode = 2;
+                    cameraTimer = 0;
+                }
+            } 
+            else if (cameraMode === 2) { 
+                var secondPlace = activeHorses[1] ? activeHorses[1] : activeHorses[0];
+                targetFocusX = secondPlace.progress;
+                targetScale = 1.2; 
+                cameraStatusText.innerText = "카메라 모드: [CH 2] 2등마 추격 캠 🔍 (" + secondPlace.name + ")";
+                cameraStatusText.style.color = "#3498db";
+
+                if (cameraTimer >= 60) { 
+                    cameraMode = 3;
+                    cameraTimer = 0;
+                }
+            } 
+            else if (cameraMode === 3) { 
+                var first = activeHorses[0].progress;
+                var last = activeHorses[activeHorses.length - 1].progress;
+                targetFocusX = (first + last) / 2; 
+                targetScale = 0.65; 
+                cameraStatusText.innerText = "카메라 모드: [CH 3] 전체 경기장 풀샷 캠 🎬 (줌아웃)";
+                cameraStatusText.style.color = "#fd79a8";
+
+                if (cameraTimer >= 180) { 
+                    cameraMode = 1;
+                    cameraTimer = 0;
+                }
+            }
+
+            currentFocusX += (targetFocusX - currentFocusX) * 0.03; 
+            zoomScale += (targetScale - zoomScale) * 0.02;           
+        }
+
+        function runLoop() {
+            if (!racing) return;
+
+            if (countdownActive) {
+                countdownTimerCounter++;
+                if (countdownTimerCounter >= 60) { 
+                    countdownTime--;
+                    countdownTimerCounter = 0;
+                    if (countdownTime < 0) {
+                        countdownActive = false; 
+                    }
+                }
+            }
+
+            var alive = 0;
+            for (var i = 0; i < horseList.length; i++) {
+                var h = horseList[i];
+                h.update();
+                if (!h.finished) alive++;
+            }
+
+            updateCameraSystem();
+            calculateLiveRankingData();
+
+            ctx.clearRect(0, 0, cvs.width, cvs.height);
+            
+            // [카메라 매트릭스 구역 시작]
+            ctx.save();
+            ctx.translate(gameViewWidth/2, cvs.height/2);
+            ctx.scale(zoomScale, zoomScale);
+            ctx.translate(-gameViewWidth/2, -cvs.height/2);
+
+            // ★ [연산 순서 교정] 이제 초록 잔디밭과 레일도 트랜스폼 매트릭스 내부에서 그려져 줌인/줌아웃에 완벽 동기화됩니다!
+            drawScrollingTrack(currentFocusX);
+            
+            for (var j = 0; j < horseList.length; j++) {
+                horseList[j].draw(currentFocusX);
+            }
+            ctx.restore();
+            // [카메라 매트릭스 구역 끝]
+
+            // 🎯 우측 순위 보드는 카메라 효과가 적용되지 않고 상시 우측에 칼고정 출력
+            drawCanvasSidebarRanking();
+
+            if (countdownActive) {
+                ctx.save();
+                ctx.fillStyle = "rgba(0, 0, 0, 0.4)"; 
+                ctx.fillRect(0, 0, gameViewWidth, cvs.height);
+                
+                ctx.fillStyle = "#f1c40f"; 
+                ctx.font = "bold 80px sans-serif";
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                
+                var displayText = countdownTime === 0 ? "START! 🏁" : countdownTime;
+                ctx.fillText(displayText, gameViewWidth / 2, cvs.height / 2);
+                ctx.restore();
+            }
+
+            if (alive > 0) {
+                setTimeout(runLoop, 1000 / 60);
+            } else {
+                racing = false;
+                cameraStatusText.innerText = "카메라 모드: 경기 종료";
+                cameraStatusText.style.color = "#2ecc71";
+                document.getElementById('startBtn').disabled = false;
+                document.getElementById('addBtn').disabled = false;
+                
+                var delBtns = document.getElementsByClassName('btn-del');
+                for(var b=0; b<delBtns.length; b++) delBtns[b].disabled = false;
+                
+                stopLiveRecordingAndReadyBtn();
+
+                ctx.clearRect(0, 0, cvs.width, cvs.height);
+                drawTrackStatic();
+                alert("🏁 모든 말이 결승선에 통과했습니다! 최종 순위까지 통으로 보존된 녹화본이 준비되었습니다.");
+            }
+        }
+
+        function startLiveRecording() {
+            recordedChunks = [];
+            var stream = cvs.captureStream(60); 
+            var options = { mimeType: 'video/webm;codecs=vp9' };
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: 'video/webm;codecs=vp8' };
+            if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: 'video/webm' };
+            
+            try {
+                mediaRecorder = new MediaRecorder(stream, options);
+            } catch (e) {
+                console.log("레코더 하드웨어 예외");
+                return;
+            }
+            
+            mediaRecorder.ondataavailable = function(event) {
+                if (event.data && event.data.size > 0) {
+                    recordedChunks.push(event.data);
+                }
+            };
+            
+            mediaRecorder.start(10);
+        }
+
+        function stopLiveRecordingAndReadyBtn() {
+            if (!mediaRecorder || mediaRecorder.state === "inactive") return;
+            
+            mediaRecorder.onstop = function() {
+                hasVideoData = true;
+                var recBtn = document.getElementById('recordBtn');
+                recBtn.disabled = false;
+                recBtn.classList.add('active');
+                recBtn.innerText = "💾 녹화 영상 저장하기";
+            };
+            
+            mediaRecorder.stop();
+        }
+
+        function downloadVideo() {
+            if (!hasVideoData || recordedChunks.length === 0) return;
+            
+            var blob = new Blob(recordedChunks, { type: 'video/webm' });
+            var url = URL.createObjectURL(blob);
+            
+            var a = document.createElement('a');
+            document.body.appendChild(a);
+            a.style = 'display: none';
+            a.href = url;
+            a.download = '복불복경마게임_완전체녹화.webm'; 
+            a.click();
+            
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        }
+
+        window.onload = function() {
+            drawTrackStatic();
+        };
+    </script>
+</body>
+</html>
