@@ -77,7 +77,7 @@
             margin-top: 10px;
         }
         canvas {
-            background-color: #1a1a1a; /* 경기장 밖 빈 공간은 어두운 베이스 처리 */
+            background-color: #1a1a1a; 
             border: 4px solid #111;
             border-radius: 10px;
         }
@@ -95,8 +95,8 @@
         <h2 style="margin:0 0 5px 0;">🏇 복불복 경마게임(ver.괴도jw)</h2>
         <div id="cameraStatus">카메라 모드: 대기 중</div>
         <div class="inputs" id="boxContainer">
-            <div class="input-box"><span>1번 </span><input type="text" value="번개" class="horse-name"><button class="btn-del" onclick="deleteHorse(this)">X</button></div>
-            <div class="input-box"><span>2번 </span><input type="text" value="적토마" class="horse-name"><button class="btn-del" onclick="deleteHorse(this)">X</button></div>
+            <div class="input-box"><span>1번 </span><input type="text" value="말1" class="horse-name"><button class="btn-del" onclick="deleteHorse(this)">X</button></div>
+            <div class="input-box"><span>2번 </span><input type="text" value="말2" class="horse-name"><button class="btn-del" onclick="deleteHorse(this)">X</button></div>
         </div>
         <button class="btn-add" id="addBtn" onclick="addHorse()">+ 말 추가</button>
         <button class="btn-start" id="startBtn" onclick="startRace()">레이스 시작!</button>
@@ -116,19 +116,35 @@
         var racing = false;
         var rankCounter = 0;
         
-        var totalMapLength = 4800; 
         var startLineOffset = 100; 
-        var finishLineOffset = 4600; 
-        
         var obstaclePositions = [];
-        var trackRange = finishLineOffset - startLineOffset;
+        
+        var jokerObstacleX = 0;
+        var jokerTargetLane = -1; 
 
-        obstaclePositions.push(startLineOffset + trackRange * (1 / 8));
-        obstaclePositions.push(startLineOffset + trackRange * (2 / 8));
-        obstaclePositions.push(startLineOffset + trackRange * (3 / 8));
-        obstaclePositions.push(startLineOffset + trackRange * (4 / 8));
-        obstaclePositions.push(startLineOffset + trackRange * (5 / 8));
-        obstaclePositions.push(finishLineOffset - 100);
+        var originalTrackRange = 4600 - startLineOffset;
+        var stepInterval = (originalTrackRange / 6) * 0.625; 
+
+        obstaclePositions.push(startLineOffset + stepInterval);     
+        obstaclePositions.push(startLineOffset + stepInterval * 2); 
+        obstaclePositions.push(startLineOffset + stepInterval * 3); 
+        obstaclePositions.push(startLineOffset + stepInterval * 4); 
+        obstaclePositions.push(startLineOffset + stepInterval * 5); 
+        
+        jokerObstacleX = (obstaclePositions[2] + obstaclePositions[3]) / 2;
+
+        var box5X = startLineOffset + stepInterval * 5;
+        var originalBox6X = (startLineOffset + stepInterval * 6) - 150;
+        var originalBox5to6Gap = originalBox6X - box5X;
+        
+        var extendedBox6X = box5X + (originalBox5to6Gap * 1.5);
+        obstaclePositions.push(extendedBox6X); 
+        
+        var finalObstacleX = extendedBox6X + 1000;
+        obstaclePositions.push(finalObstacleX);                     
+
+        var finishLineOffset = finalObstacleX + 250; 
+        var totalMapLength = finishLineOffset + 200; 
 
         var gameViewWidth = 1200;
 
@@ -148,16 +164,19 @@
         var hasVideoData = false;
 
         var liveRankedHorses = [];
+        var raceActualStartTime = 0;
 
-        function Horse(id, name, laneY, color) {
+        function Horse(id, name, laneY, color, laneIndex) {
             this.id = id;
             this.name = name;
             this.y = laneY;
             this.color = color;
+            this.laneIndex = laneIndex; 
             this.progress = startLineOffset; 
             this.speed = 0;
             this.finished = false;
             this.finalRank = 0; 
+            this.recordTime = "0.00초"; 
             this.timer = 0;
             
             this.backTimer = 0;   
@@ -167,14 +186,26 @@
             this.textVisibleTimer = 0;
             this.textModel = "";
             
+            this.customFrontSpeed = 8;
+
+            this.passiveSpeedMultiplier = 1;
+            this.passiveTimer = 0;
+            this.isPassiveReserved = false; 
+
+            this.jokerDebuffMultiplier = 1;
+            this.jokerDebuffTimer = 0;
+            this.jokerBuffMultiplier = 1;
+            this.jokerBuffTimer = 0;
+
             this.hitObstacles = new Array(obstaclePositions.length).fill(false);
+            this.hitJokerObstacle = false; 
 
             this.changeSpeed();
         }
 
         Horse.prototype.changeSpeed = function() {
             if (this.backTimer > 0 || this.stunTimer > 0 || this.frontTimer > 0) return; 
-            this.speed = Math.random() * 1.5 + 2.5; 
+            this.speed = (Math.random() * 1.5 + 2.5) * this.passiveSpeedMultiplier * this.jokerDebuffMultiplier * this.jokerBuffMultiplier; 
         };
 
         Horse.prototype.draw = function(currentCameraX) {
@@ -215,6 +246,22 @@
 
             if (countdownActive) return;
 
+            if (this.jokerDebuffTimer > 0) {
+                this.jokerDebuffTimer--;
+                if (this.jokerDebuffTimer === 0) {
+                    this.jokerDebuffMultiplier = 1;
+                    this.changeSpeed();
+                }
+            }
+
+            if (this.jokerBuffTimer > 0) {
+                this.jokerBuffTimer--;
+                if (this.jokerBuffTimer === 0) {
+                    this.jokerBuffMultiplier = 1;
+                    this.changeSpeed();
+                }
+            }
+
             if (this.backTimer > 0) {
                 this.backTimer--;
                 this.speed = (this.textModel === "LAST_BOOM") ? -25 : -8; 
@@ -225,9 +272,26 @@
                 if (this.stunTimer === 0) this.changeSpeed();
             } else if (this.frontTimer > 0) {
                 this.frontTimer--;
-                this.speed = 8;
+                this.speed = this.customFrontSpeed;
+                // 🛠️ [긴급 수정 완료] 존재하지 않는 오타 함수 명을 올바른 내부 메서드 호출로 전면 수정!
                 if (this.frontTimer === 0) this.changeSpeed();
             } else {
+                if (this.isPassiveReserved) {
+                    this.isPassiveReserved = false; 
+                    this.passiveSpeedMultiplier = 2; 
+                    this.passiveTimer = 120; 
+                    this.abilityText = "🔥 [구원 패시브] 2초간 기본속도 2배!!";
+                    this.textVisibleTimer = 120;
+                }
+
+                if (this.passiveTimer > 0) {
+                    this.passiveTimer--;
+                    if (this.passiveTimer === 0) {
+                        this.passiveSpeedMultiplier = 1;
+                        this.changeSpeed();
+                    }
+                }
+
                 this.timer++;
                 if (this.timer > 20) {
                     this.changeSpeed();
@@ -237,6 +301,90 @@
 
             this.progress += this.speed;
             if (this.progress < 0) this.progress = 0;
+
+            if (!this.hitJokerObstacle && this.laneIndex === jokerTargetLane && this.progress >= jokerObstacleX) {
+                this.hitJokerObstacle = true;
+                
+                this.backTimer = 0;
+                this.stunTimer = 0;
+                this.frontTimer = 0;
+                this.textVisibleTimer = 120;
+                
+                var jokerChoice = Math.floor(Math.random() * 5) + 1; 
+                
+                if (jokerChoice === 1) {
+                    this.abilityText = "🌀 [조커] 타임 스톱! 상위 50% 기절!!";
+                    var runningHorses = horseList.filter(h => !h.finished);
+                    runningHorses.sort((a, b) => b.progress - a.progress); 
+                    var targetCount = Math.ceil(runningHorses.length / 2);
+                    
+                    for (var k = 0; k < targetCount; k++) {
+                        var targetHorse = runningHorses[k];
+                        if (targetHorse.id !== this.id) {
+                            targetHorse.backTimer = 0;
+                            targetHorse.frontTimer = 0;
+                            targetHorse.stunTimer = 60; 
+                            targetHorse.speed = 0;
+                            targetHorse.abilityText = "🛑 [조커 저주] 상위권 강제 기절!!";
+                            targetHorse.textVisibleTimer = 60;
+                        }
+                    }
+                } 
+                else if (jokerChoice === 2) {
+                    this.abilityText = "🌀 [조커] 중력 제어! 타인 속도 -50%!!";
+                    for (var m = 0; m < horseList.length; m++) {
+                        var targetHorse = horseList[m];
+                        if (targetHorse.id !== this.id && !targetHorse.finished) {
+                            targetHorse.jokerDebuffMultiplier = 0.5;
+                            targetHorse.jokerDebuffTimer = 90; 
+                            targetHorse.changeSpeed();
+                            targetHorse.abilityText = "🐌 [조커 저주] 1.5초간 속도 감속!!";
+                            targetHorse.textVisibleTimer = 90;
+                        }
+                    }
+                } 
+                else if (jokerChoice === 3) {
+                    var otherRunningHorses = horseList.filter(h => !h.finished && h.id !== this.id);
+                    
+                    if (otherRunningHorses.length > 0) {
+                        var luckyTarget = otherRunningHorses[Math.floor(Math.random() * otherRunningHorses.length)];
+                        
+                        var myOldProgress = this.progress;
+                        this.progress = luckyTarget.progress;
+                        luckyTarget.progress = myOldProgress;
+                        
+                        this.abilityText = "🌀 [조커] 위치 트레이드! [" + luckyTarget.name + "]와 교환!!";
+                        
+                        luckyTarget.abilityText = "🌀 [조커의 장난] [" + this.name + "]와 강제 위치 변경!!";
+                        luckyTarget.textVisibleTimer = 120;
+                    } else {
+                        this.abilityText = "🌀 [조커] 위치 변경 대상이 없습니다!";
+                    }
+                } 
+                else if (jokerChoice === 4) {
+                    this.abilityText = "😱 [조커 꽝] 나만 1.5초간 속도 감속!!";
+                    this.jokerDebuffMultiplier = 0.5;
+                    this.jokerDebuffTimer = 90; 
+                    this.speed *= 0.5;
+                }
+                else if (jokerChoice === 5) {
+                    this.abilityText = "🌀 [조커] 후방 지원! 하위 50% 속도 2배!!";
+                    var runningHorses = horseList.filter(h => !h.finished);
+                    runningHorses.sort((a, b) => a.progress - b.progress); 
+                    var targetCount = Math.ceil(runningHorses.length / 2);
+                    
+                    for (var k = 0; k < targetCount; k++) {
+                        var targetHorse = runningHorses[k];
+                        if (targetHorse.id !== this.id) {
+                            targetHorse.jokerBuffMultiplier = 2;
+                            targetHorse.jokerBuffTimer = 90; 
+                            targetHorse.changeSpeed();
+                            targetHorse.abilityText = "🔥 [조커 축복] 1.5초간 속도 2배!!";
+                            targetHorse.textVisibleTimer = 90;
+                        }
+                    }
+                }
+            }
 
             for (var idx = 0; idx < obstaclePositions.length; idx++) {
                 var obsX = obstaclePositions[idx];
@@ -250,6 +398,15 @@
                     this.textVisibleTimer = 90; 
                     this.textModel = ""; 
 
+                    if (idx === obstaclePositions.length - 2) {
+                        var runningHorses = horseList.filter(h => !h.finished);
+                        runningHorses.sort((a, b) => a.progress - b.progress); 
+                        
+                        if (runningHorses[0] && this.id === runningHorses[0].id || runningHorses[1] && this.id === runningHorses[1].id) {
+                            this.isPassiveReserved = true; 
+                        }
+                    }
+
                     if (idx === obstaclePositions.length - 1) {
                         var finalChoice = Math.floor(Math.random() * 3) + 1;
                         if (finalChoice === 1) {
@@ -257,15 +414,16 @@
                             this.textModel = "LAST_BOOM"; 
                             this.backTimer = 18; 
                         } else if (finalChoice === 2) {
-                            this.abilityText = "🛑 막판 얼음! (1.5초 정지)";
-                            this.stunTimer = 90; 
+                            this.abilityText = "🛑 막판 얼음! (2.0초 정지)";
+                            this.stunTimer = 120; 
                             this.speed = 0;
                         } else if (finalChoice === 3) {
                             this.abilityText = "😇 무사 통과!! 대박!!";
                             this.changeSpeed(); 
                         }
                     } else {
-                        var choice = Math.floor(Math.random() * 3) + 1;
+                        var choice = Math.floor(Math.random() * 6) + 1;
+
                         if (choice === 1) {
                             this.abilityText = "💥 후퇴 (-100px)";
                             this.backTimer = 18; 
@@ -274,8 +432,21 @@
                             this.stunTimer = 30; 
                             this.speed = 0;
                         } else if (choice === 3) {
-                            this.abilityText = "⚡ 전진 (+100px)";
+                            this.abilityText = "⚡ 전진 (+80px)";
                             this.frontTimer = 18; 
+                            this.customFrontSpeed = 80 / 18; 
+                        } else if (choice === 4) {
+                            this.abilityText = "⚡ 대전진 (+100px)";
+                            this.frontTimer = 18; 
+                            this.customFrontSpeed = 100 / 18; 
+                        } else if (choice === 5) {
+                            this.abilityText = "⚡ 초전진 (+120px)";
+                            this.frontTimer = 18; 
+                            this.customFrontSpeed = 120 / 18; 
+                        } else if (choice === 6) {
+                            this.abilityText = "⚡ 신의 전진 (+144px) 🔥";
+                            this.frontTimer = 18; 
+                            this.customFrontSpeed = 144 / 18; 
                         }
                     }
                     break; 
@@ -285,30 +456,35 @@
             if (this.progress >= finishLineOffset) {
                 this.progress = finishLineOffset;
                 this.finished = true;
+                this.passiveTimer = 0;
+                this.isPassiveReserved = false;
+                this.passiveSpeedMultiplier = 1;
+                this.jokerDebuffTimer = 0;
+                this.jokerDebuffMultiplier = 1;
+                this.jokerBuffTimer = 0;
+                this.jokerBuffMultiplier = 1;
                 rankCounter++;
                 this.finalRank = rankCounter; 
+                var elapsed = (Date.now() - raceActualStartTime) / 1000;
+                this.recordTime = elapsed.toFixed(2) + "초";
             }
         };
 
-        // [구조 수정] 이제 초록색 판때기도 카메라 스케일에 대응할 수 있도록 함수 체질 개선
         function drawScrollingTrack(currentCameraX) {
             var inputs = document.getElementsByClassName('horse-name');
             var lanesCount = inputs.length;
             var currentLanesHeight = lanesCount * 60 + 60;
 
-            // ★ [수정] 고정 위치로 그리던 초록색 경기장을 카메라 줌인/줌아웃에 맞춰 함께 연동되도록 보정
-            // 줌아웃 시 바깥 빈 공간이 보이지 않도록 좌우로 넓게(-2000 ~ 4000) 초록 바닥을 깔아줍니다.
             ctx.fillStyle = '#2ecc71';
-            ctx.fillRect(-2000, 0, 6000, currentLanesHeight);
+            ctx.fillRect(-2000, 0, totalMapLength + 3000, currentLanesHeight);
 
-            // 흰색 트랙 레일선들
             ctx.strokeStyle = 'rgba(255,255,255,0.4)';
             ctx.lineWidth = 2;
             for (var i = 0; i <= lanesCount; i++) {
                 var lineY = 40 + (i * 60);
                 ctx.beginPath();
                 ctx.moveTo(-2000, lineY);
-                ctx.lineTo(4000, lineY);
+                ctx.lineTo(totalMapLength + 1000, lineY);
                 ctx.stroke();
             }
 
@@ -330,9 +506,28 @@
             ctx.stroke();
             ctx.setLineDash([]);
 
+            if (jokerTargetLane !== -1) {
+                var renderJokerX = jokerObstacleX - currentCameraX + (gameViewWidth / 2) / zoomScale;
+                var jokerBoxY = 70 + (jokerTargetLane * 60);
+                
+                ctx.fillStyle = '#00aec5'; 
+                ctx.fillRect(renderJokerX - 11, jokerBoxY - 11, 22, 22);
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 2;
+                ctx.strokeRect(renderJokerX - 11, jokerBoxY - 11, 22, 22);
+                
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 15px sans-serif';
+                ctx.textBaseline = 'middle';
+                ctx.textAlign = 'center';
+                ctx.fillText('?', renderJokerX, jokerBoxY);
+            }
+
             for (var o = 0; o < obstaclePositions.length; o++) {
                 var renderObsX = obstaclePositions[o] - currentCameraX + (gameViewWidth / 2) / zoomScale;
+                
                 var boxBorderColor = (o === obstaclePositions.length - 1) ? '#e74c3c' : '#d35400';
+                if (o === obstaclePositions.length - 2) boxBorderColor = '#3498db'; 
                 
                 for (var j = 0; j < lanesCount; j++) {
                     var boxY = 70 + (j * 60);
@@ -347,7 +542,9 @@
                     ctx.font = 'bold 14px sans-serif';
                     ctx.textBaseline = 'middle';
                     ctx.textAlign = 'center';
-                    ctx.fillText('?', renderObsX, boxY);
+                    
+                    var boxText = (o + 1).toString();
+                    ctx.fillText(boxText, renderObsX, boxY);
                 }
             }
         }
@@ -402,13 +599,23 @@
                     ctx.fillStyle = h.color;
                     ctx.font = "bold 15px sans-serif";
                     var truncatedName = h.name.length > 6 ? h.name.substring(0, 6) + ".." : h.name;
-                    ctx.fillText("[" + h.id + "번] " + truncatedName, sidebarX + 65, itemY);
+                    
+                    var passiveMark = (h.passiveTimer > 0 || h.isPassiveReserved || h.jokerBuffTimer > 0) ? "🔥" : "";
+                    ctx.fillText("[" + h.id + "번] " + truncatedName + passiveMark, sidebarX + 65, itemY);
 
                     ctx.fillStyle = "white";
                     ctx.font = "12px sans-serif";
                     ctx.textAlign = "right";
-                    var statusText = h.finished ? "골인!🏁" : Math.floor(h.progress) + "m";
-                    ctx.fillText(statusText, sidebarX + sidebarW - 20, itemY - 1);
+                    
+                    var timeDisplay = "0.00초";
+                    if (h.finished) {
+                        timeDisplay = h.recordTime; 
+                    } else if (!countdownActive && raceActualStartTime > 0) {
+                        var currentElapsed = (Date.now() - raceActualStartTime) / 1000;
+                        timeDisplay = currentElapsed.toFixed(2) + "초";
+                    }
+                    
+                    ctx.fillText(timeDisplay, sidebarX + sidebarW - 20, itemY - 1);
                     ctx.textAlign = "left";
                 }
             }
@@ -464,7 +671,6 @@
             var tempCamX = startLineOffset + 400; 
             ctx.clearRect(0, 0, cvs.width, cvs.height);
             
-            // 대기화면 트랙 그리기
             drawScrollingTrack(tempCamX);
 
             var colorPalette = ['#e74c3c', '#f1c40f', '#3498db', '#9b59b6', '#e67e22', '#1abc9c', '#fd79a8', '#00b894', '#ffeaa7', '#a29bfe'];
@@ -502,6 +708,7 @@
             horseList = [];
             rankCounter = 0;
             leaderProgress = startLineOffset;
+            raceActualStartTime = 0; 
             
             cameraMode = 1; 
             cameraTimer = 0;
@@ -511,6 +718,8 @@
             countdownActive = true;
             countdownTime = 3;
             countdownTimerCounter = 0;
+
+            jokerTargetLane = Math.floor(Math.random() * inputs.length);
 
             var recBtn = document.getElementById('recordBtn');
             recBtn.disabled = true;
@@ -526,7 +735,7 @@
                 var laneY = 70 + (i * 60);
                 var selectColor = colorPalette[i % colorPalette.length];
                 
-                var h = new Horse(i + 1, nameText, laneY, selectColor);
+                var h = new Horse(i + 1, nameText, laneY, selectColor, i);
                 h.progress = startLineOffset; 
                 horseList.push(h);
             }
@@ -635,6 +844,7 @@
                     countdownTimerCounter = 0;
                     if (countdownTime < 0) {
                         countdownActive = false; 
+                        raceActualStartTime = Date.now(); 
                     }
                 }
             }
@@ -651,22 +861,18 @@
 
             ctx.clearRect(0, 0, cvs.width, cvs.height);
             
-            // [카메라 매트릭스 구역 시작]
             ctx.save();
             ctx.translate(gameViewWidth/2, cvs.height/2);
             ctx.scale(zoomScale, zoomScale);
             ctx.translate(-gameViewWidth/2, -cvs.height/2);
 
-            // ★ [연산 순서 교정] 이제 초록 잔디밭과 레일도 트랜스폼 매트릭스 내부에서 그려져 줌인/줌아웃에 완벽 동기화됩니다!
             drawScrollingTrack(currentFocusX);
             
             for (var j = 0; j < horseList.length; j++) {
                 horseList[j].draw(currentFocusX);
             }
             ctx.restore();
-            // [카메라 매트릭스 구역 끝]
 
-            // 🎯 우측 순위 보드는 카메라 효과가 적용되지 않고 상시 우측에 칼고정 출력
             drawCanvasSidebarRanking();
 
             if (countdownActive) {
@@ -751,7 +957,7 @@
             document.body.appendChild(a);
             a.style = 'display: none';
             a.href = url;
-            a.download = '복불복경마게임_완전체녹화.webm'; 
+            a.download = '경마게임 다시보기.webm'; 
             a.click();
             
             window.URL.revokeObjectURL(url);
